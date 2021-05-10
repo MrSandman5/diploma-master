@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use cosmwasm_std::{Binary, CosmosMsg, HumanAddr, Querier, StdResult, Uint128};
 
 use secret_toolkit::snip20::{register_receive_msg, token_info_query, transfer_msg, TokenInfo};
-use crate::state::Credit;
 
 /// storage key for auction state
 pub const CONFIG_KEY: &[u8] = b"config";
@@ -34,10 +33,9 @@ pub struct InitMsg {
 #[serde(rename_all = "snake_case")]
 pub enum HandleMsg {
     /// Receive gets called by the token contracts of the auction.  If it came from the sale token, it
-    /// will consign the sent tokens.  If it came from the bid token, it will place a bid.  If any
-    /// other address tries to call this, it will give an error message that the calling address is
-    /// not a token in the auction.
-    Receive {
+    /// will consign the sent tokens. If any other address tries to call this,
+    /// it will give an error message that the calling address is not a token in the auction.
+    ReceiveConsign {
         /// address of person or contract that sent the tokens that triggered this Receive
         sender: HumanAddr,
         /// address of the owner of the tokens sent to the auction
@@ -50,9 +48,25 @@ pub enum HandleMsg {
         msg: Option<Binary>,
     },
 
-    /// RetractBid will retract any active bid the calling address has made and return the tokens
-    /// that are held in escrow
-    RetractBid {},
+    /// Receive gets called by the token contracts of the auction. If it came from the bid token, it will place a bid.
+    /// If any other address tries to call this, it will give an error message that the calling address is
+    /// not a token in the auction.
+    ReceiveBid {
+        /// address of person or contract that sent the tokens that triggered this Receive
+        sender: HumanAddr,
+        /// address of the owner of the tokens sent to the auction
+        from: HumanAddr,
+        /// amount of tokens sent
+        amount: Proposition,
+        /// Optional base64 encoded message sent with the Send call -- not needed or used by this
+        /// contract
+        #[serde(default)]
+        msg: Option<Binary>,
+    },
+
+    // /// RetractBid will retract any active bid the calling address has made and return the tokens
+    // /// that are held in escrow
+    // RetractBid {},
 
     /// ViewBid will display the amount of the active bid made by the calling address and time the
     /// bid was placed
@@ -90,8 +104,6 @@ pub enum QueryAnswer {
         bid_token: Token,
         /// amount of tokens being sold
         sell_amount: Uint128,
-        /// minimum bid that will be accepted
-        minimum_bid: Uint128,
         /// Optional String description of auction
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
@@ -172,16 +184,16 @@ pub enum HandleAnswer {
         #[serde(skip_serializing_if = "Option::is_none")]
         amount_returned: Option<Uint128>,
     },
-    /// response from attempt to retract bid
-    RetractBid {
-        /// success or failure
-        status: ResponseStatus,
-        /// execution description
-        message: String,
-        /// Optional amount of tokens returned from escrow
-        #[serde(skip_serializing_if = "Option::is_none")]
-        amount_returned: Option<Uint128>,
-    },
+    // /// response from attempt to retract bid
+    // RetractBid {
+    //     /// success or failure
+    //     status: ResponseStatus,
+    //     /// execution description
+    //     message: String,
+    //     /// Optional amount of tokens returned from escrow
+    //     #[serde(skip_serializing_if = "Option::is_none")]
+    //     amount_returned: Option<Uint128>,
+    // },
     /// generic status response
     Status {
         /// success or failure

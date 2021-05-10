@@ -74,7 +74,7 @@ pub fn remove<S: Storage>(storage: &mut S, key: &[u8]) {
 /// * `storage` - a reference to the storage this item is in
 /// * `key` - a byte slice representing the key that accesses the stored item
 pub fn load<T: DeserializeOwned, S: ReadonlyStorage>(storage: &S, key: &[u8]) -> StdResult<T> {
-    bincode2::deserialize(
+    Bincode2::deserialize(
         &storage
             .get(key)
             .ok_or_else(|| StdError::not_found(type_name::<T>()))?,
@@ -93,7 +93,8 @@ pub fn may_load<T: DeserializeOwned, S: ReadonlyStorage>(
     key: &[u8],
 ) -> StdResult<Option<T>> {
     match storage.get(key) {
-        Some(value) => bincode2::deserialize(&value).map(Some),
+        Some(value) => Bincode2::deserialize(&value).map(Some),
         None => Ok(None),
     }
 }
+

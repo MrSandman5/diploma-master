@@ -14,8 +14,6 @@ use crate::state::{load, may_load, remove, save, Bid, State};
 use chrono::NaiveDateTime;
 
 ////////////////////////////////////// Init ///////////////////////////////////////
-/// Returns InitResult
-///
 /// Initializes the auction state and registers Receive function with sell and bid
 /// token contracts
 ///
@@ -29,11 +27,11 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     env: Env,
     msg: InitMsg,
 ) -> InitResult {
-    let mut current_amount : u128 = 0;
+    let current_amount : u128;
     if msg.sell_amount.len() == 0 {
         current_amount = 5;
     } else {
-        current_amount = convert_to_tokens(msg.sell_amount);
+        current_amount = convert_to_tokens(msg.sell_amount) as u128;
     }
     if msg.sell_contract.address == msg.bid_contract.address {
         return Err(StdError::generic_err(
@@ -70,13 +68,13 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     })
 }
 
-fn convert_to_tokens(history : Vec<Credit>) -> u128 {
-    let mut tokens : u128 = 0;
+fn convert_to_tokens(history : Vec<Credit>) -> i128 {
+    let mut tokens : i128 = 0;
     for credit in history {
         let sum : u128 = (credit.sum * credit.interest_rate as u128) / (credit.time * 30 * 24) as u128;
         if credit.is_closed {
-            tokens += sum;
-        } else { tokens -= sum; }
+            tokens += sum as i128;
+        } else { tokens -= sum as i128; }
     }
     if tokens < 0 {
         5
@@ -84,7 +82,7 @@ fn convert_to_tokens(history : Vec<Credit>) -> u128 {
 }
 
 ///////////////////////////////////// Handle //////////////////////////////////////
-/// Returns HandleResult
+/// Handle incoming messages from nodes
 ///
 /// # Arguments
 ///
@@ -97,9 +95,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     msg: HandleMsg,
 ) -> HandleResult {
     let response = match msg {
-        //HandleMsg::RetractBid { .. } => try_retract(deps, env.message.sender),
         HandleMsg::Finalize { only_if_bids, .. } => try_finalize(deps, env, only_if_bids, false),
-        HandleMsg::ReturnAll { .. } => try_finalize(deps, env, false, true),
         HandleMsg::ReceiveConsign { from, amount, .. } => try_receive_consign(deps, env, from, amount),
         HandleMsg::ReceiveBid { from, amount, .. } => try_receive_bid(deps, env, from, amount),
         HandleMsg::ViewBid { .. } => try_view_bid(deps, &env.message.sender)
@@ -107,7 +103,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     pad_handle_result(response, BLOCK_SIZE)
 }
 
-/// Returns HandleResult
+/// View active bid on auction
 ///
 /// # Arguments
 ///
@@ -156,8 +152,6 @@ fn try_view_bid<S: Storage, A: Api, Q: Querier>(
     })
 }
 
-/// Returns HandleResult
-///
 /// process the Receive message sent after sell token contract sent tokens to
 /// auction escrow
 ///
@@ -195,8 +189,6 @@ fn try_receive_consign<S: Storage, A: Api, Q: Querier>(
     }
 }
 
-/// Returns HandleResult
-///
 /// process the Receive message sent after bid
 ///
 /// # Arguments
@@ -233,9 +225,7 @@ fn try_receive_bid<S: Storage, A: Api, Q: Querier>(
     }
 }
 
-/// Returns HandleResult
-///
-/// process the attempt to consign sale tokens to auction escrow
+/// Consign sale tokens to auction escrow
 ///
 /// # Arguments
 ///
@@ -353,9 +343,7 @@ fn try_consign<S: Storage, A: Api, Q: Querier>(
     })
 }
 
-/// Returns HandleResult
-///
-/// process the bid attempt
+/// Bid attempt
 ///
 /// # Arguments
 ///
@@ -496,7 +484,7 @@ fn try_bid<S: Storage, A: Api, Q: Querier>(
 
 /// Returns HandleResult
 ///
-/// closes the auction and sends all the tokens in escrow to where they belong
+/// Closing the auction and sending all the tokens in escrow to where they belong
 ///
 /// # Arguments
 ///
@@ -684,7 +672,7 @@ pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryM
     pad_query_result(response, BLOCK_SIZE)
 }
 
-/// Returns QueryResult
+/// View auction details
 ///
 /// # Arguments
 ///
@@ -692,12 +680,9 @@ pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryM
 fn try_query_info<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> QueryResult {
     let state: State = load(&deps.storage, CONFIG_KEY)?;
 
-    // get sell token info
     let sell_token_info = state.sell_contract.token_info_query(&deps.querier)?;
-    // get bid token info
     let bid_token_info = state.bid_contract.token_info_query(&deps.querier)?;
 
-    // build status string
     let status = if state.is_completed {
         let locked = if !state.bidders.is_empty() || state.currently_consigned > 0 {
             ", but found outstanding balances.  Please run either retract_bid to \

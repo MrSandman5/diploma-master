@@ -20,7 +20,7 @@ pub struct State {
     /// code hash and address of bid token contract
     pub bid_contract: ContractInfo,
     /// amount of tokens for sale
-    pub sell_amount: u128,
+    pub credit_request: u128,
     /// amount of tokens currently consigned to auction escrow
     pub currently_consigned: u128,
     /// list of addresses of bidders

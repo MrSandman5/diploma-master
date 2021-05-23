@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use cosmwasm_std::{CosmosMsg, HumanAddr, Querier, StdResult, Uint128};
+use cosmwasm_std::{CosmosMsg, HumanAddr, Querier, StdResult, Uint128, Binary};
 
 use secret_toolkit::snip20::{register_receive_msg, token_info_query, transfer_msg, TokenInfo};
 
@@ -19,7 +19,7 @@ pub struct InitMsg {
     /// bid contract code hash and address
     pub bid_contract: ContractInfo,
     /// amount of tokens being sold
-    pub sell_amount: Vec<Credit>,
+    pub credit_request: Vec<Credit>,
     /// Optional description of the auction
     #[serde(default)]
     pub description: Option<String>,
@@ -29,28 +29,21 @@ pub struct InitMsg {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HandleMsg {
-    /// Receive gets called by the token contracts of the auction and consign the sent tokens.
-    /// If any other address tries to call this,
-    /// it will give an error message that the calling address is not a token in the auction.
-    ReceiveConsign {
+    /// Receive gets called by the token contracts of the auction.  If it came from the sale token, it
+    /// will consign the sent tokens.  If it came from the bid token, it will place a bid.  If any
+    /// other address tries to call this, it will give an error message that the calling address is
+    /// not a token in the auction.
+    Receive {
         /// address of person or contract that sent the tokens that triggered this Receive
         sender: HumanAddr,
         /// address of the owner of the tokens sent to the auction
         from: HumanAddr,
         /// amount of tokens sent
         amount: Uint128,
-    },
-
-    /// Receive gets called by the token contracts of the auction and place a bid.
-    /// If any other address tries to call this, it will give an error message that the calling address is
-    /// not a token in the auction.
-    ReceiveBid {
-        /// address of person or contract that sent the tokens that triggered this Receive
-        sender: HumanAddr,
-        /// address of the owner of the tokens sent to the auction
-        from: HumanAddr,
-        /// amount of tokens sent
-        amount: Proposition,
+        /// Optional base64 encoded message sent with the Send call -- not needed or used by this
+        /// contract
+        #[serde(default)]
+        msg: Option<Binary>,
     },
 
     /// ViewBid will display the active bid made by the calling address
@@ -61,6 +54,10 @@ pub enum HandleMsg {
         /// true if auction creator wants to keep the auction open if there are no active bids
         only_if_bids: bool,
     },
+    /// If the auction holds any funds after it has closed (should never happen), this will return
+    /// those funds to their owners.  Should never be needed, but included in case of unforeseen
+    /// error
+    ReturnAll {},
 }
 
 /// Queries
@@ -69,6 +66,9 @@ pub enum HandleMsg {
 pub enum QueryMsg {
     /// Displays the auction information
     AuctionInfo {},
+    CalculateProposal {
+        proposal: Proposal,
+    }
 }
 
 /// responses to queries
@@ -82,7 +82,7 @@ pub enum QueryAnswer {
         /// bid token address and TokenInfo query response
         bid_token: Token,
         /// amount of tokens being sold
-        sell_amount: Uint128,
+        credit_request: Uint128,
         /// Optional description of auction
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
@@ -96,6 +96,13 @@ pub enum QueryAnswer {
         #[serde(skip_serializing_if = "Option::is_none")]
         winning_bid: Option<Uint128>,
     },
+    CalculateProposal {
+        /// amount of tokens to bid
+        #[serde(skip_serializing_if = "Option::is_none")]
+        credit_proposal: Option<Uint128>,
+        /// execution description
+        message: String,
+    }
 }
 
 /// token's contract address and TokenInfo response
@@ -176,28 +183,28 @@ pub enum HandleAnswer {
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Credit {
     /// amount of money
-    pub sum: u128,
+    pub sum: Uint128,
     /// interest rate of credit
-    pub interest_rate: u16,
+    pub interest_rate: Uint128,
     /// time to close credit (in months)
-    pub time: u16,
+    pub time: Uint128,
     /// condition of closing
     pub is_closed: bool,
 }
 
 /// credit proposition data
 #[derive(Serialize, Deserialize, JsonSchema)]
-pub struct Proposition {
+pub struct Proposal {
     /// amount of money
-    pub sum: u128,
+    pub sum: Uint128,
     /// interest rate of credit
-    pub interest_rate: u16,
+    pub interest_rate: Uint128,
     /// time to close credit (in months)
-    pub time: u16,
+    pub time: Uint128,
 }
 
 /// code hash and address of a contract
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Clone, PartialEq, Debug)]
 pub struct ContractInfo {
     /// contract's code hash string
     pub code_hash: String,

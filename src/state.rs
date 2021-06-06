@@ -97,4 +97,3 @@ pub fn may_load<T: DeserializeOwned, S: ReadonlyStorage>(
         None => Ok(None),
     }
 }
-

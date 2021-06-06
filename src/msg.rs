@@ -60,67 +60,6 @@ pub enum HandleMsg {
     ReturnAll {},
 }
 
-/// Queries
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryMsg {
-    /// Displays the auction information
-    AuctionInfo {},
-    CalculateProposal {
-        proposal: Proposal,
-    }
-}
-
-/// responses to queries
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryAnswer {
-    /// AuctionInfo query response
-    AuctionInfo {
-        /// sell token address and TokenInfo query response
-        sell_token: Token,
-        /// bid token address and TokenInfo query response
-        bid_token: Token,
-        /// amount of tokens being sold
-        credit_request: Uint128,
-        /// Optional description of auction
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        /// address of auction contract
-        auction_address: HumanAddr,
-        /// status of the auction can be "Accepting bids: Tokens to be sold have(not) been
-        /// consigned" or "Closed" (will also state if there are outstanding funds after auction
-        /// closure
-        status: String,
-        /// If the auction resulted in a swap, this will state the winning bid
-        #[serde(skip_serializing_if = "Option::is_none")]
-        winning_bid: Option<Uint128>,
-    },
-    CalculateProposal {
-        /// amount of tokens to bid
-        #[serde(skip_serializing_if = "Option::is_none")]
-        credit_proposal: Option<Uint128>,
-        /// execution description
-        message: String,
-    }
-}
-
-/// token's contract address and TokenInfo response
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
-pub struct Token {
-    /// contract address of token
-    pub contract_address: HumanAddr,
-    /// Tokeninfo query response
-    pub token_info: TokenInfo,
-}
-
-/// success or failure response
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
-pub enum ResponseStatus {
-    Success,
-    Failure,
-}
-
 /// Responses from handle functions
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -177,6 +116,67 @@ pub enum HandleAnswer {
         /// execution description
         message: String,
     },
+}
+
+/// Queries
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryMsg {
+    /// Displays the auction information
+    AuctionInfo {},
+    CalculateProposal {
+        proposal: Proposal,
+    }
+}
+
+/// responses to queries
+#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryAnswer {
+    /// AuctionInfo query response
+    AuctionInfo {
+        /// sell token address and TokenInfo query response
+        sell_token: Token,
+        /// bid token address and TokenInfo query response
+        bid_token: Token,
+        /// amount of tokens being sold
+        credit_request: Uint128,
+        /// Optional description of auction
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// address of auction contract
+        auction_address: HumanAddr,
+        /// status of the auction can be "Accepting bids: Tokens to be sold have(not) been
+        /// consigned" or "Closed" (will also state if there are outstanding funds after auction
+        /// closure
+        status: String,
+        /// If the auction resulted in a swap, this will state the winning bid
+        #[serde(skip_serializing_if = "Option::is_none")]
+        winning_bid: Option<Uint128>,
+    },
+    CalculateProposal {
+        /// amount of tokens to bid
+        #[serde(skip_serializing_if = "Option::is_none")]
+        credit_proposal: Option<Uint128>,
+        /// execution description
+        message: String,
+    }
+}
+
+/// token's contract address and TokenInfo response
+#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+pub struct Token {
+    /// contract address of token
+    pub contract_address: HumanAddr,
+    /// Tokeninfo query response
+    pub token_info: TokenInfo,
+}
+
+/// success or failure response
+#[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq)]
+pub enum ResponseStatus {
+    Success,
+    Failure,
 }
 
 /// client credit data

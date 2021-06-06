@@ -324,15 +324,14 @@ fn try_bid<S: Storage, A: Api, Q: Querier>(
             // if new bid is <= the old bid, keep old bid and return this one
             if amount.u128() <= old_bid.amount {
                 let message = String::from(
-                    "New bid less than or equal to previous bid. Newly bid tokens have been \
-                     returned",
+                    "New bid less than or equal to previous bid. Newly bid tokens have been returned",
                 );
 
                 let resp = serde_json::to_string(&HandleAnswer::Bid {
                     status: Failure,
                     message,
                     previous_bid: Some(Uint128(old_bid.amount)),
-                    amount_bid: None,
+                    amount_bid: Some(amount),
                     amount_returned: Some(amount),
                 }).unwrap();
 
@@ -635,9 +634,7 @@ fn try_calculate_proposal<S: Storage, A: Api, Q: Querier>(
 mod tests {
     use super::*;
     use crate::msg::ContractInfo;
-    use cosmwasm_std::{
-        from_binary, testing::*, QueryResponse, StdResult,
-    };
+    use cosmwasm_std::{from_binary, testing::*, QueryResponse, StdResult};
     use std::any::Any;
 
     fn init_helper() -> (
@@ -711,43 +708,6 @@ mod tests {
         }
     }
 
-    fn extract_msg(resp: &StdResult<HandleResponse>) -> String {
-        let handle_answer: HandleAnswer =
-            from_binary(&resp.as_ref().unwrap().data.as_ref().unwrap()).unwrap();
-        match handle_answer {
-            HandleAnswer::Bid { message, .. } => message.clone(),
-            HandleAnswer::Consign { message, .. } => message.clone(),
-            HandleAnswer::CloseAuction { message, .. } => message.clone(),
-            _ => panic!("Unexpected HandleAnswer"),
-        }
-    }
-
-    fn extract_finalize_fields(
-        resp: &StdResult<HandleResponse>,
-    ) -> (
-        ResponseStatus,
-        String,
-        Option<Uint128>,
-        Option<Uint128>,
-    ) {
-        let handle_answer: HandleAnswer =
-            from_binary(&resp.as_ref().unwrap().data.as_ref().unwrap()).unwrap();
-        match handle_answer {
-            HandleAnswer::CloseAuction {
-                status,
-                message,
-                winning_bid,
-                amount_returned
-            } => (
-                status,
-                message,
-                winning_bid,
-                amount_returned
-            ),
-            _ => panic!("Unexpected HandleAnswer"),
-        }
-    }
-
     #[test]
     fn test_init_sanity() {
         let (init_result, deps) = init_helper();
@@ -806,6 +766,58 @@ mod tests {
 
     #[test]
     fn test_consign() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        // try to consign if not seller
+        let handle_msg = HandleMsg::Receive {
+            sender: HumanAddr("blah".to_string()),
+            from: HumanAddr("bob".to_string()),
+            amount: Uint128(2500),
+            msg: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains("Only auction creator can consign tokens for sale"));
+
+        // try already consigned
+        let handle_msg = HandleMsg::Receive {
+            sender: HumanAddr("blah".to_string()),
+            from: HumanAddr("auction".to_string()),
+            amount: Uint128(2500),
+            msg: None,
+        };
+        let _handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
+        let handle_msg = HandleMsg::Receive {
+            sender: HumanAddr("blah".to_string()),
+            from: HumanAddr("auction".to_string()),
+            amount: Uint128(2500),
+            msg: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains("Tokens to be sold have already been consigned."));
+
+        // try to consign after closing
+        let handle_msg = HandleMsg::Finalize {
+            only_if_bids: false
+        };
+        let _used = handle(&mut deps, mock_env("auction", &[]), handle_msg);
+        let handle_msg = HandleMsg::Receive {
+            sender: HumanAddr("blah".to_string()),
+            from: HumanAddr("auction".to_string()),
+            amount: Uint128(2500),
+            msg: None,
+        };
+
+        let handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains("Auction has ended. Your tokens have been returned"));
+
         // try consign too little
         let (init_result, mut deps) = init_helper();
         assert!(
@@ -845,6 +857,24 @@ mod tests {
 
     #[test]
     fn test_bid() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        // try bid 0
+        let handle_msg = HandleMsg::Receive {
+            sender: HumanAddr("blah".to_string()),
+            from: HumanAddr("bob".to_string()),
+            amount: Uint128(0),
+            msg: None,
+        };
+        let handle_result = handle(&mut deps, mock_env("bidaddr", &[]), handle_msg);
+        let error = extract_error_msg(handle_result);
+        assert!(error.contains("Bid must be greater than 0"));
+
         // try bid bigger than credit request
         let (init_result, mut deps) = init_helper();
         assert!(
@@ -901,7 +931,6 @@ mod tests {
         let log = extract_log(handle_result);
         assert!(log.contains("New bid less than or equal to previous bid. Newly bid tokens have been returned"));
         assert!(log.contains("\"previous_bid\":\"100\""));
-        assert!(log.contains("\"amount_bid\":\"100\""));
         assert!(log.contains("\"amount_returned\":\"100\""));
         let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
         assert_eq!(state.bidders.len(), 1);
@@ -917,7 +946,7 @@ mod tests {
         let log = extract_log(handle_result);
         assert!(log.contains("New bid less than or equal to previous bid. Newly bid tokens have been returned"));
         assert!(log.contains("\"amount_bid\":\"25\""));
-        assert!(log.contains("\"amount_returned\":\"100\""));
+        assert!(log.contains("\"amount_returned\":\"25\""));
         let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
         assert_eq!(state.bidders.len(), 1);
 
@@ -932,9 +961,8 @@ mod tests {
         let log = extract_log(handle_result);
         assert!(log.contains("Previously bid tokens have been returned"));
         assert!(log.contains("\"amount_bid\":\"250\""));
-        assert!(log.contains("\"amount_returned\":\"25\""));
+        assert!(log.contains("\"amount_returned\":\"100\""));
         let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
         assert_eq!(state.bidders.len(), 1);
     }
-
 }

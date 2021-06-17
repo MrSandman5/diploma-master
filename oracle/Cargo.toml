@@ -1,10 +1,11 @@
 [package]
-name = "diploma_master"
+name = "oracle"
 version = "0.1.0"
-authors = ["simon"]
+authors = ["Simon Safonov <mrsandman138@gmail.com>"]
 edition = "2018"
 
 exclude = [
+  # Those files are rust-optimizer artifacts. You might want to commit them for convenience but they should not be part of the source code publication.
   "contract.wasm",
   "hash.txt",
 ]
@@ -37,7 +38,6 @@ cosmwasm-std = { git = "https://github.com/enigmampc/SecretNetwork", tag = "v1.0
 cosmwasm-storage = { git = "https://github.com/enigmampc/SecretNetwork", tag = "v1.0.0" }
 schemars = "0.7"
 serde = { version = "1.0.125", default-features = false, features = ["derive"] }
-serde-json-wasm = "0.3.1"
+serde_json = { version = "1.0.64", default-features = false, features = ["alloc"] }
 snafu = { version = "0.6.10" }
-chrono = { version = "0.4.19" }
 secret-toolkit = { git = "https://github.com/enigmampc/secret-toolkit" }

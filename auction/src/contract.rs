@@ -5,11 +5,9 @@ use cosmwasm_std::{
 
 use std::collections::HashSet;
 
-use serde_json_wasm as serde_json;
+use secret_toolkit::utils::{pad_handle_result, pad_query_result, Query};
 
-use secret_toolkit::utils::{pad_handle_result, pad_query_result};
-
-use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg, ResponseStatus, ResponseStatus::{Failure, Success}, Token, CONFIG_KEY, BLOCK_SIZE, Credit, Proposal};
+use crate::msg::{HandleAnswer, HandleMsg, InitMsg, QueryAnswer, QueryMsg, ResponseStatus, ResponseStatus::{Failure, Success}, Token, CONFIG_KEY, BLOCK_SIZE, OracleQueryMsg, OracleQueryResponse, History};
 use crate::state::{load, may_load, remove, save, Bid, State};
 use chrono::NaiveDateTime;
 
@@ -27,26 +25,48 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
     env: Env,
     msg: InitMsg,
 ) -> InitResult {
-    let current_amount : Option<u128>;
-    if msg.credit_request.is_empty() {
-        return Err(StdError::generic_err("There must be a credit history"));
-    } else {
-        current_amount = convert_to_tokens(msg.credit_request);
-        if current_amount.is_none(){
-            return Err(StdError::generic_err("You have too bad credit history to get a new credit"));
-        }
-    }
+
     if msg.sell_contract.address == msg.bid_contract.address {
         return Err(StdError::generic_err(
             "Sell contract and bid contract must be different",
         ));
     }
+    if msg.payment <= msg.expected {
+        return Err(StdError::generic_err(
+            "You can't expect to pay less than sum of credit",
+        ));
+    }
+    let mut number = msg.payment.u128();
+    let mut len : u32 = 0;
+    while number > 0 {
+        number /= 10;
+        len += 1;
+    }
+    let perfect_proposal = 10u128.pow(len - 1);
+
+    let seller = env.message.sender;
+    let get_history = OracleQueryMsg::GetHistory {user: seller.clone()};
+    let history_response: OracleQueryResponse = get_history.query(
+        &deps.querier,
+        msg.oracle_contract.code_hash,
+        msg.oracle_contract.address,
+    )?;
+
+    if history_response.history.is_none(){
+        return Err(StdError::generic_err("You have no credit history to calculate score"));
+    };
+    let current_scope = calculate_score(history_response.history.unwrap(), perfect_proposal);
+    if current_scope.is_none(){
+        return Err(StdError::generic_err("You have too bad score"));
+    };
+
     let state = State {
         auction_addr: env.contract.address,
-        seller: env.message.sender,
+        seller: seller.clone(),
         sell_contract: msg.sell_contract,
         bid_contract: msg.bid_contract,
-        credit_request: current_amount.unwrap(),
+        score: current_scope.unwrap(),
+        average_bid: calculate_estimation(msg.payment, msg.expected, perfect_proposal),
         currently_consigned: 0,
         bidders: HashSet::new(),
         is_completed: false,
@@ -75,18 +95,31 @@ pub fn init<S: Storage, A: Api, Q: Querier>(
 /// # Arguments
 ///
 /// * `history` - vector of credit histories
-fn convert_to_tokens(history : Vec<Credit>) -> Option<u128> {
-    let mut tokens : i128 = 0;
-    for credit in history {
-        let sum : u128 = (credit.sum.u128() * credit.interest_rate.u128()) / (credit.time.u128() * 30 * 24) as u128;
+fn calculate_score(history : History, mul : u128) -> Option<u128> {
+    let mut score: i128 = 0;
+    let credits = history.credits;
+    let length = credits.len();
+    let mut cred_hist: i128 = 0;
+    for credit in credits {
+        let sum: u128 = credit.sum.u128() * credit.interest_rate.u128() * credit.time.u128();
         if credit.is_closed {
-            tokens += sum as i128;
-        } else { tokens -= sum as i128; }
+            cred_hist += sum as i128;
+        } else { cred_hist -= sum as i128; }
     }
-    if tokens < 0 {
+    if cred_hist > 0 {
+        score += cred_hist / 2 + cred_hist % 2;
+    }
+    if history.debts.is_some() {
+        score -= (history.debts.unwrap().u128() / 3 + history.debts.unwrap().u128() % 3) as i128;
+    }
+    score += (length as i128 * mul as i128) / 5 + (length as i128 * mul as i128) % 5;
+    let result = (score as u128 / mul + score as u128 % mul) / 100;
+    if result == 0 {
         None
-    } else { Some(tokens as u128) }
+    } else { Some(result) }
 }
+
+fn calculate_estimation(a: Uint128, b: Uint128, mul : u128) -> u128 { (a.u128() / b.u128()) * mul + (a.u128() % b.u128()) }
 
 ///////////////////////////////////// Handle //////////////////////////////////////
 /// Handle incoming messages from nodes
@@ -104,7 +137,7 @@ pub fn handle<S: Storage, A: Api, Q: Querier>(
     let response = match msg {
         HandleMsg::Finalize { only_if_bids, .. } => try_finalize(deps, env, only_if_bids, false),
         HandleMsg::ReturnAll { .. } => try_finalize(deps, env, false, true),
-        HandleMsg::Receive { from, amount, .. } => try_receive(deps, env, from, amount),
+        HandleMsg::Receive { from, amount, ..} => try_receive(deps, env, from, amount),
         HandleMsg::ViewBid { .. } => try_view_bid(deps, &env.message.sender)
     };
     pad_handle_result(response, BLOCK_SIZE)
@@ -174,7 +207,7 @@ fn try_receive<S: Storage, A: Api, Q: Querier>(
     deps: &mut Extern<S, A, Q>,
     env: Env,
     from: HumanAddr,
-    amount: Uint128,
+    amount: Uint128
 ) -> HandleResult {
     let mut state: State = load(&deps.storage, CONFIG_KEY)?;
 
@@ -207,7 +240,7 @@ fn try_consign<S: Storage, A: Api, Q: Querier>(
     // if not the auction owner, send the tokens back
     if owner != state.seller {
         return Err(StdError::generic_err(
-            "Only auction creator can consign tokens for sale.  Your tokens have been returned",
+            "Only auction creator can consign tokens for sale. Your tokens have been returned",
         ));
     }
     // if auction is over, send the tokens back
@@ -229,10 +262,10 @@ fn try_consign<S: Storage, A: Api, Q: Querier>(
     let status: ResponseStatus;
     let mut excess: Option<Uint128> = None;
     let mut needed: Option<Uint128> = None;
-    // if consignment amount < auction sell amount, ask for remaining balance
-    if consign_total < state.credit_request {
+    // if consignment amount < client score, ask for remaining balance
+    if consign_total < state.score {
         state.currently_consigned = consign_total;
-        needed = Some(Uint128(state.credit_request - consign_total));
+        needed = Some(Uint128(state.score - consign_total));
         status = Failure;
         log_msg.push_str(
             "You have not consigned the full amount to be sold. You need to consign additional \
@@ -241,12 +274,12 @@ fn try_consign<S: Storage, A: Api, Q: Querier>(
         // all tokens to be sold have been consigned
     } else {
         state.tokens_consigned = true;
-        state.currently_consigned = state.credit_request;
+        state.currently_consigned = state.score;
         status = Success;
         log_msg.push_str("Tokens to be sold have been consigned to the auction");
         // if consigned more than needed, return excess tokens
-        if consign_total > state.credit_request {
-            excess = Some(Uint128(consign_total - state.credit_request));
+        if consign_total > state.score {
+            excess = Some(Uint128(consign_total - state.score));
             cos_msg.push(state.sell_contract.transfer_msg(owner, excess.unwrap())?);
             log_msg.push_str(". Excess tokens have been returned");
         }
@@ -293,20 +326,39 @@ fn try_bid<S: Storage, A: Api, Q: Querier>(
     }
     // don't accept a 0 bid
     if amount == Uint128(0) {
-        return Err(StdError::generic_err("Bid must be greater than 0"));
+        return Err(StdError::generic_err(
+            "Bid must be greater than 0",
+        ));
     }
-    // if bid is bigger than the credit request, send the tokens back
-    if amount.u128() >= state.credit_request {
+
+    let mut number = amount.u128();
+    let mut len : u32 = 0;
+    while number > 0 {
+        number /= 10;
+        len += 1;
+    }
+    let perfect_proposal = 10u128.pow(len - 1);
+
+    // don't accept a 0 bid
+    if amount == Uint128(perfect_proposal) {
+        return Err(StdError::generic_err(
+            "You can't expect getting lesser or equal to what you propose",
+        ));
+    }
+
+    // if bid is greater than client estimation, send the tokens back
+    if amount.u128() > state.average_bid {
         let message =
-            String::from("Bid was bigger than stated. Bid tokens have been returned");
+            String::from("Bid was greater than estimation allowed. Bid tokens have been returned");
 
         let resp = serde_json::to_string(&HandleAnswer::Bid {
             status: Failure,
             message,
             previous_bid: None,
-            amount_bid: Some(Uint128(state.credit_request)),
+            amount_bid: None,
             amount_returned: Some(amount),
-        }).unwrap();
+        })
+            .unwrap();
 
         return Ok(HandleResponse {
             messages: vec![state.bid_contract.transfer_msg(bidder, amount)?],
@@ -314,6 +366,7 @@ fn try_bid<S: Storage, A: Api, Q: Querier>(
             data: None,
         });
     }
+
     let mut return_amount: Option<Uint128> = None;
     let bidder_raw = &deps.api.canonical_address(&bidder)?;
 
@@ -321,10 +374,10 @@ fn try_bid<S: Storage, A: Api, Q: Querier>(
     if state.bidders.contains(&bidder_raw.as_slice().to_vec()) {
         let bid: Option<Bid> = may_load(&deps.storage, bidder_raw.as_slice())?;
         if let Some(old_bid) = bid {
-            // if new bid is <= the old bid, keep old bid and return this one
-            if amount.u128() <= old_bid.amount {
+            // if new bid is >= the old bid, keep old bid and return this one
+            if amount.u128() >= old_bid.amount {
                 let message = String::from(
-                    "New bid less than or equal to previous bid. Newly bid tokens have been returned",
+                    "New bid greater than or equal to previous bid. Newly bid tokens have been returned",
                 );
 
                 let resp = serde_json::to_string(&HandleAnswer::Bid {
@@ -340,12 +393,12 @@ fn try_bid<S: Storage, A: Api, Q: Querier>(
                     log: vec![log("response", resp)],
                     data: None,
                 });
-                // new bid is larger, save the new bid, and return the old one, so mark for return
+                // new bid is less, save the new bid, and return the old one, so mark for return
             } else {
                 return_amount = Some(Uint128(old_bid.amount));
             }
         }
-        // address did not have an active bid
+    // address did not have an active bid
     } else {
         // insert in list of bidders and save
         state.bidders.insert(bidder_raw.as_slice().to_vec());
@@ -407,7 +460,7 @@ fn try_finalize<S: Storage, A: Api, Q: Querier>(
     // if not the auction owner, can't finalize, but you can return_all
     if !return_all && env.message.sender != state.seller {
         return Err(StdError::generic_err(
-            "Only auction creator can finalize the sale",
+            "Only auction creator can finalize the sal",
         ));
     }
     // if there are no active bids, and owner only wants to close if bids
@@ -442,9 +495,9 @@ fn try_finalize<S: Storage, A: Api, Q: Querier>(
         // closing an auction that has been fully consigned
         if state.tokens_consigned && !state.is_completed {
             bid_list.sort_by(|a, b| {
-                a.bid
+                b.bid
                     .amount
-                    .cmp(&b.bid.amount)
+                    .cmp(&a.bid.amount)
                     .then(b.bid.timestamp.cmp(&a.bid.timestamp))
             });
             // if there was a winner, swap the tokens
@@ -456,7 +509,7 @@ fn try_finalize<S: Storage, A: Api, Q: Querier>(
                 );
                 cos_msg.push(state.sell_contract.transfer_msg(
                     deps.api.human_address(&winning_bid.bidder)?,
-                    Uint128(state.credit_request),
+                    Uint128(state.score),
                 )?);
                 state.currently_consigned = 0;
                 update_state = true;
@@ -543,7 +596,6 @@ fn try_finalize<S: Storage, A: Api, Q: Querier>(
 pub fn query<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>, msg: QueryMsg) -> QueryResult {
     let response = match msg {
         QueryMsg::AuctionInfo { .. } => try_query_info(deps),
-        QueryMsg::CalculateProposal { proposal } => try_calculate_proposal(deps, proposal)
     };
     pad_query_result(response, BLOCK_SIZE)
 }
@@ -591,378 +643,11 @@ fn try_query_info<S: Storage, A: Api, Q: Querier>(deps: &Extern<S, A, Q>) -> Que
             contract_address: state.bid_contract.address,
             token_info: bid_token_info,
         },
-        credit_request: Uint128(state.credit_request),
+        score: Uint128(state.score),
+        average_bid: Uint128(state.average_bid),
         description: state.description,
         auction_address: state.auction_addr,
         status,
         winning_bid,
     })
-}
-
-/// Calculate tokens from credit proposal
-///
-/// # Arguments
-///
-/// * `deps` - reference to Extern containing all the contract's external dependencies
-/// * `proposal` - credit proposal
-fn try_calculate_proposal<S: Storage, A: Api, Q: Querier>(
-    deps: &Extern<S, A, Q>,
-    proposal: Proposal
-) -> QueryResult {
-    let state: State = load(&deps.storage, CONFIG_KEY)?;
-    let tokens = (proposal.sum.u128() * proposal.interest_rate.u128()) / (proposal.time.u128() * 30 * 24) as u128;
-
-    let bid: Option<Uint128> = if tokens < state.credit_request {
-        Some(Uint128(tokens))
-    } else {
-        None
-    };
-
-    let mes = if tokens < state.credit_request {
-        "Good proposal, mate!"
-    } else {
-        "Try another proposition"
-    }.to_string();
-
-    to_binary(&QueryAnswer::CalculateProposal {
-        credit_proposal: bid,
-        message: mes
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::msg::ContractInfo;
-    use cosmwasm_std::{from_binary, testing::*, QueryResponse, StdResult};
-    use std::any::Any;
-
-    fn init_helper() -> (
-        StdResult<InitResponse>,
-        Extern<MockStorage, MockApi, MockQuerier>,
-    ) {
-        let mut deps = mock_dependencies(20, &[]);
-        let env = mock_env("auction", &[]);
-
-        let sell_contract = ContractInfo {
-            code_hash: "sellhash".to_string(),
-            address: HumanAddr("selladdr".to_string()),
-        };
-        let bid_contract = ContractInfo {
-            code_hash: "bidhash".to_string(),
-            address: HumanAddr("bidaddr".to_string()),
-        };
-        let credit1 = Credit {
-            sum : Uint128(100000),
-            interest_rate : Uint128(5),
-            time : Uint128(6),
-            is_closed : true
-        };
-        let credit2 = Credit {
-            sum : Uint128(200000),
-            interest_rate : Uint128(10),
-            time : Uint128(9),
-            is_closed : false
-        };
-        let credit3 = Credit {
-            sum : Uint128(200000),
-            interest_rate : Uint128(7),
-            time : Uint128(6),
-            is_closed : true
-        };
-        let credit4 = Credit {
-            sum : Uint128(150000),
-            interest_rate : Uint128(10),
-            time : Uint128(12),
-            is_closed : true
-        };
-
-        let init_msg = InitMsg {
-            sell_contract,
-            bid_contract,
-            credit_request: vec![credit1, credit2, credit3, credit4],
-            description: None,
-        };
-        (init(&mut deps, env, init_msg), deps)
-    }
-
-    fn extract_error_msg<T: Any>(error: StdResult<T>) -> String {
-        match error {
-            Ok(response) => {
-                let bin_err = (&response as &dyn Any)
-                    .downcast_ref::<QueryResponse>()
-                    .expect("An error was expected, but no error could be extracted");
-                from_binary(bin_err).unwrap()
-            }
-            Err(err) => match err {
-                StdError::GenericErr { msg, .. } => msg,
-                _ => panic!("Unexpected result from init"),
-            },
-        }
-    }
-
-    fn extract_log(resp: StdResult<HandleResponse>) -> String {
-        match resp {
-            Ok(response) => response.log[0].value.clone(),
-            Err(_err) => "These are not the logs you are looking for".to_string(),
-        }
-    }
-
-    #[test]
-    fn test_init_sanity() {
-        let (init_result, deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        let sell_contract = ContractInfo {
-            code_hash: "sellhash".to_string(),
-            address: HumanAddr("selladdr".to_string()),
-        };
-        let bid_contract = ContractInfo {
-            code_hash: "bidhash".to_string(),
-            address: HumanAddr("bidaddr".to_string()),
-        };
-        let credit1 = Credit {
-            sum : Uint128(100000),
-            interest_rate : Uint128(5),
-            time : Uint128(6),
-            is_closed : true
-        };
-        let credit2 = Credit {
-            sum : Uint128(200000),
-            interest_rate : Uint128(10),
-            time : Uint128(9),
-            is_closed : false
-        };
-        let credit3 = Credit {
-            sum : Uint128(200000),
-            interest_rate : Uint128(7),
-            time : Uint128(6),
-            is_closed : true
-        };
-        let credit4 = Credit {
-            sum : Uint128(150000),
-            interest_rate : Uint128(10),
-            time : Uint128(12),
-            is_closed : true
-        };
-
-        let credit_request = convert_to_tokens(vec![credit1, credit2, credit3, credit4]);
-
-        assert_eq!(HumanAddr("auction".to_string()), state.seller);
-        assert_eq!(sell_contract, state.sell_contract);
-        assert_eq!(bid_contract, state.bid_contract);
-        assert_eq!(credit_request.unwrap(), state.credit_request);
-        assert_eq!(0, state.currently_consigned);
-        assert_eq!(HashSet::new(), state.bidders);
-        assert_eq!(false, state.is_completed);
-        assert_eq!(false, state.tokens_consigned);
-        assert_eq!(None, state.description);
-        assert_eq!(0, state.winning_bid);
-    }
-
-    #[test]
-    fn test_consign() {
-        let (init_result, mut deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        // try to consign if not seller
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(2500),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Only auction creator can consign tokens for sale"));
-
-        // try already consigned
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("auction".to_string()),
-            amount: Uint128(2500),
-            msg: None,
-        };
-        let _handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("auction".to_string()),
-            amount: Uint128(2500),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Tokens to be sold have already been consigned."));
-
-        // try to consign after closing
-        let handle_msg = HandleMsg::Finalize {
-            only_if_bids: false
-        };
-        let _used = handle(&mut deps, mock_env("auction", &[]), handle_msg);
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("auction".to_string()),
-            amount: Uint128(2500),
-            msg: None,
-        };
-
-        let handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Auction has ended. Your tokens have been returned"));
-
-        // try consign too little
-        let (init_result, mut deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        assert_eq!(304, state.credit_request);
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("auction".to_string()),
-            amount: Uint128(2),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
-        let log = extract_log(handle_result);
-        assert!(log.contains("not consigned the full amount"));
-        assert!(log.contains("\"amount_needed\":\"302\""));
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        assert_eq!(false, state.tokens_consigned);
-
-        // try consign too much
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("auction".to_string()),
-            amount: Uint128(310),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("selladdr", &[]), handle_msg);
-        let log = extract_log(handle_result);
-        assert!(log.contains("Excess tokens have been returned"));
-        assert!(log.contains("\"amount_returned\":\"8\""));
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        assert!(state.tokens_consigned);
-    }
-
-    #[test]
-    fn test_bid() {
-        let (init_result, mut deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        // try bid 0
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(0),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bidaddr", &[]), handle_msg);
-        let error = extract_error_msg(handle_result);
-        assert!(error.contains("Bid must be greater than 0"));
-
-        // try bid bigger than credit request
-        let (init_result, mut deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(320),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bidaddr", &[]), handle_msg);
-        let log = extract_log(handle_result);
-        assert!(log.contains("Bid was bigger than stated. Bid tokens have been returned"));
-        assert!(log.contains("\"amount_bid\":\"304\""));
-        assert!(log.contains("\"amount_returned\":\"320\""));
-
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        assert_eq!(state.bidders.len(), 0);
-
-        // sanity check
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bidaddr", &[]), handle_msg);
-        let log = extract_log(handle_result);
-        assert!(log.contains("Bid accepted"));
-        assert!(log.contains("\"amount_bid\":\"100\""));
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        assert_eq!(state.bidders.len(), 1);
-        let bid: Bid = load(
-            &deps.storage,
-            deps.api
-                .canonical_address(&HumanAddr("bob".to_string()))
-                .unwrap()
-                .as_slice(),
-        )
-            .unwrap();
-        assert_eq!(bid.amount, 100);
-
-        // test bid equal to previous bid
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(100),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bidaddr", &[]), handle_msg);
-        let log = extract_log(handle_result);
-        assert!(log.contains("New bid less than or equal to previous bid. Newly bid tokens have been returned"));
-        assert!(log.contains("\"previous_bid\":\"100\""));
-        assert!(log.contains("\"amount_returned\":\"100\""));
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        assert_eq!(state.bidders.len(), 1);
-
-        // test bid less than previous bid
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(25),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bidaddr", &[]), handle_msg);
-        let log = extract_log(handle_result);
-        assert!(log.contains("New bid less than or equal to previous bid. Newly bid tokens have been returned"));
-        assert!(log.contains("\"amount_bid\":\"25\""));
-        assert!(log.contains("\"amount_returned\":\"25\""));
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        assert_eq!(state.bidders.len(), 1);
-
-        // test bid more than previous bid
-        let handle_msg = HandleMsg::Receive {
-            sender: HumanAddr("blah".to_string()),
-            from: HumanAddr("bob".to_string()),
-            amount: Uint128(250),
-            msg: None,
-        };
-        let handle_result = handle(&mut deps, mock_env("bidaddr", &[]), handle_msg);
-        let log = extract_log(handle_result);
-        assert!(log.contains("Previously bid tokens have been returned"));
-        assert!(log.contains("\"amount_bid\":\"250\""));
-        assert!(log.contains("\"amount_returned\":\"100\""));
-        let state: State = load(&deps.storage, CONFIG_KEY).unwrap();
-        assert_eq!(state.bidders.len(), 1);
-    }
 }

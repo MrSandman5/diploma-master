@@ -1,0 +1,38 @@
+{
+  "debts": "100000",
+  "credits":
+  [
+    {
+      "sum": "1000000",
+      "interest_rate": "6",
+      "time": "12",
+      "is_closed": true
+    },
+    {
+      "sum": "100000",
+      "interest_rate": "5",
+      "time": "6",
+      "is_closed": false
+    },
+    {
+      "sum": "500000",
+      "interest_rate": "10",
+      "time": "9",
+      "is_closed": false
+    },
+    {
+      "sum": "200000",
+      "interest_rate": "7",
+      "time": "6",
+      "is_closed": true
+    },
+    {
+      "sum": "150000",
+      "interest_rate": "10",
+      "time": "12",
+      "is_closed": true
+    }
+  ]
+}
+
+{"debts": "100000", "credits": [{"sum": "1000000", "interest_rate": "6", "time": "12", "is_closed": true}, {"sum": "100000", "interest_rate": "5", "time": "6", "is_closed": false}, {"sum": "500000", "interest_rate": "10", "time": "9", "is_closed": false}, {"sum": "200000", "interest_rate": "7", "time": "6", "is_closed": true}, {"sum": "150000", "interest_rate": "10", "time": "12", "is_closed": true}]}

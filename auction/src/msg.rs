@@ -1,9 +1,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use cosmwasm_std::{CosmosMsg, HumanAddr, Querier, StdResult, Uint128, Binary};
+use cosmwasm_std::{CosmosMsg, HumanAddr, Querier, StdResult, Uint128};
 
 use secret_toolkit::snip20::{register_receive_msg, token_info_query, transfer_msg, TokenInfo};
+use secret_toolkit::utils::Query;
 
 /// storage key for auction state
 pub const CONFIG_KEY: &[u8] = b"config";
@@ -18,10 +19,14 @@ pub struct InitMsg {
     pub sell_contract: ContractInfo,
     /// bid contract code hash and address
     pub bid_contract: ContractInfo,
-    /// amount of tokens being sold
-    pub credit_request: Vec<Credit>,
+    /// expected sum of credit
+    pub expected: Uint128,
+    /// alleged sum to pay
+    pub payment: Uint128,
+    /// oracle contract code hash and address
+    pub oracle_contract: ContractInfo,
     /// Optional description of the auction
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
@@ -40,10 +45,6 @@ pub enum HandleMsg {
         from: HumanAddr,
         /// amount of tokens sent
         amount: Uint128,
-        /// Optional base64 encoded message sent with the Send call -- not needed or used by this
-        /// contract
-        #[serde(default)]
-        msg: Option<Binary>,
     },
 
     /// ViewBid will display the active bid made by the calling address
@@ -54,7 +55,7 @@ pub enum HandleMsg {
         /// true if auction creator wants to keep the auction open if there are no active bids
         only_if_bids: bool,
     },
-    /// If the auction holds any funds after it has closed (should never happen), this will return
+    /// If the auction holds any funds after it has closed (extreme situation), this will return
     /// those funds to their owners.  Should never be needed, but included in case of unforeseen
     /// error
     ReturnAll {},
@@ -124,9 +125,6 @@ pub enum HandleAnswer {
 pub enum QueryMsg {
     /// Displays the auction information
     AuctionInfo {},
-    CalculateProposal {
-        proposal: Proposal,
-    }
 }
 
 /// responses to queries
@@ -139,8 +137,10 @@ pub enum QueryAnswer {
         sell_token: Token,
         /// bid token address and TokenInfo query response
         bid_token: Token,
-        /// amount of tokens being sold
-        credit_request: Uint128,
+        /// user credit score
+        score: Uint128,
+        /// average bid for auction
+        average_bid: Uint128,
         /// Optional description of auction
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
@@ -154,13 +154,32 @@ pub enum QueryAnswer {
         #[serde(skip_serializing_if = "Option::is_none")]
         winning_bid: Option<Uint128>,
     },
-    CalculateProposal {
-        /// amount of tokens to bid
-        #[serde(skip_serializing_if = "Option::is_none")]
-        credit_proposal: Option<Uint128>,
-        /// execution description
-        message: String,
-    }
+}
+
+/// Query for oracle contract
+#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OracleQueryMsg {
+    /// get user history query
+    GetHistory {
+        /// user address
+        user: HumanAddr,
+    },
+}
+
+impl Query for OracleQueryMsg {
+    const BLOCK_SIZE: usize = 256;
+}
+
+/// Query response for oracle contract
+#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct OracleQueryResponse {
+    /// user history
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<History>,
+    /// execution description
+    pub message: String
 }
 
 /// token's contract address and TokenInfo response
@@ -179,8 +198,18 @@ pub enum ResponseStatus {
     Failure,
 }
 
-/// client credit data
-#[derive(Serialize, Deserialize, JsonSchema)]
+/// Client credit history
+#[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]
+pub struct History {
+    /// current funds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debts: Option<Uint128>,
+    /// all credits
+    pub credits: Vec<Credit>,
+}
+
+/// Client credit data
+#[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]
 pub struct Credit {
     /// amount of money
     pub sum: Uint128,
@@ -190,17 +219,6 @@ pub struct Credit {
     pub time: Uint128,
     /// condition of closing
     pub is_closed: bool,
-}
-
-/// credit proposition data
-#[derive(Serialize, Deserialize, JsonSchema)]
-pub struct Proposal {
-    /// amount of money
-    pub sum: Uint128,
-    /// interest rate of credit
-    pub interest_rate: Uint128,
-    /// time to close credit (in months)
-    pub time: Uint128,
 }
 
 /// code hash and address of a contract
